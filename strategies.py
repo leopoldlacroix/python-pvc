@@ -94,10 +94,33 @@ def m1(LV: pd.DataFrame):
 tst_strategy(m1)
 
 #_______________________________methodeA: Hilbert curve ________________________________________________
+# %%
+def hilbert_curve(order):
+    n = 4**order
+    n_digits =int(np.sqrt(n))
 
-def hilbert_curve(n):
-    """returns list of points of the curve of order n"""
-    pass
+    bin_rep = np.vectorize(lambda x: bin(x)[2:].rjust(n_digits, '0'))(np.arange(n))
+
+    hilbert_df = pd.Series(bin_rep).str.extract(r"(\d\d)"*int(n_digits//2), expand = True)
+    hilbert_df.columns = hilbert_df.columns[::-1]
+
+    sort_index = hilbert_df.replace({"00":0, "01":1, "11":2, "10":3})
+    sort_index = sort_index.apply(lambda x: x*4**x.name).sum(axis=1)
+
+    hilbert_df = hilbert_df.applymap(lambda x: np.array(tuple(x), dtype=int))
+    hilbert_df = hilbert_df.apply(lambda s: s*(2**s.name))
+
+    hilbert_df = hilbert_df.sum(axis=1).to_frame()
+    hilbert_df['id'] = bin_rep
+    hilbert_df['index'] = sort_index
+    hilbert_df = hilbert_df.sort_values("index")
+    hilbert_df[['x', 'y']] = hilbert_df[0].tolist()
+    return hilbert_df
+
+px.line(data_frame = hilbert_curve(1), x = "x", y = "y").show()
+px.line(data_frame = hilbert_curve(2), x = "x", y = "y").show()
+px.line(data_frame = hilbert_curve(3), x = "x", y = "y").show()
+# %%
 
 # first hilb
 # 
