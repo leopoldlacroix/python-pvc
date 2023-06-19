@@ -9,14 +9,14 @@ from itertools import permutations
 
 from hilbertcurve.hilbertcurve import HilbertCurve
 
-# %%
 
 
 def dtot(LV : pd.DataFrame):
     "Distance tot d'un parcours formule: sqrt(somme((Xi-X'i)**2)). \n referme le chemin!!"
-    circuit = pd.concat([LV,LV[0:1]])
-    d = (circuit.diff()**2).sum()
-    return d.x + d.y
+    circuit = LV[["x", "y"]]
+    circuit = pd.concat([circuit,circuit[0:1]])
+    d = np.sqrt((circuit[["x", "y"]].diff()**2).sum(axis=1)).sum()
+    return d
 
 def crea(n:int):
     "créer n villes"
@@ -33,7 +33,7 @@ def plot_path(path: pd.DataFrame, elapsed = 0, strategy_name = ''):
     score = dtot(circuit)
     fig = px.line(
         data_frame = circuit, 
-        x="x", y="y",# text="id",
+        x="x", y="y", text="id",
           title=f'{strategy_name} Score: {round(score, 4)} \t elapsed {round(elapsed, 4)}')
     fig.update_traces(textposition='top left')
     return fig
@@ -44,12 +44,12 @@ def test_strategy(strategy):
     end = time.time()
 
     elapsed = end - start
-    fig = plot_path(path, elapsed, strategy.__name__)
+    fig = plot_path(path, elapsed, strategy.__name__).show()
     return fig, debug
 
 def test_strategies(strategies: list):
     for i in range(1, len(strategies)):
-        test_strategy(strategies[i])[0].show()
+        test_strategy(strategies[i])
 
     # datas = test_strategy(strategies[0])[0].data
     # for i in range(1, len(strategies)):
@@ -104,85 +104,74 @@ def m1_naive(LV: pd.DataFrame):
 
 #_______________________________methodeA: Hilbert curve ________________________________________________
 # %%
-def get_closest_hilbert_curve_index_points(iteration, true_hc_indexes, LV: pd.DataFrame, dim = 2):
+def mirored_hilber_curve_points(iteration = 2, dim = 2):
+    if iteration == 9:
+        return np.load('mhcp9.npy')
+    if iteration >9:
+        raise Exception('Need to enhance code for more iterations!')
+    
+    n_points = 4**iteration
+    hilbert_curve_index = list(range(n_points))
+    hilb_curve = np.array(HilbertCurve(n = dim, p = iteration).points_from_distances(hilbert_curve_index))/(2**iteration-1)
+    hilb_curve = pd.DataFrame(hilb_curve)
+    
+    lower_part = hilb_curve[1] < 0.5
+    hilb_curve.loc[lower_part,[0]] = (hilb_curve.loc[~lower_part, 0]).values.reshape((n_points//2,-1))
+    hilb_curve.loc[lower_part,[1]] = (1 - hilb_curve.loc[~lower_part, 1]).values.reshape((n_points//2,-1))
+
+    n_to_miror = n_points//4
+    hilb_curve.iloc[0:n_to_miror,[0]] = hilb_curve.iloc[0:n_to_miror,[0]][::-1]
+    hilb_curve.iloc[-n_to_miror:,[0]] = hilb_curve.iloc[-n_to_miror:,[0]][::-1]
+
+    return hilb_curve.values
+
+def get_closest_hilbert_curve_index_points(iteration, LV, dim = 2):
     """returns list of points of the curve of order n"""
-    hc_points = np.array(HilbertCurve(n = dim, p = iteration).points_from_distances(true_hc_indexes))/(2**iteration-1)
+    hc_points = mirored_hilber_curve_points(iteration)
     
     closest_p_index = LV.apply(
         lambda row: ((row[['x', 'y']].values - hc_points)**2).sum(axis = 1).argmin(),
         axis = 1
     )
-    return true_hc_indexes[closest_p_index]
+    return closest_p_index
 
-
-def m2_hilb(LV: pd.DataFrame):
-    LV = LV.copy()
+# %%
+def m2_hilb(LV: pd.DataFrame, iteration = 1):
+    LV_normalized = (LV-LV.min())/(LV.max()-LV.min())
     hc_indexes_col = "true_hc_index"
-    LV[hc_indexes_col] = 0
+    LV_normalized[hc_indexes_col] = 0
     
-    start_iteration = 5
-    new_point_indexes = np.arange(4**start_iteration)
-    LV[hc_indexes_col] = get_closest_hilbert_curve_index_points(start_iteration, new_point_indexes, LV)
-
-    for iteration in range(start_iteration+1, 100):
-        LV_hc_index_value_count = LV[hc_indexes_col].value_counts()
-        are_one_ones = LV_hc_index_value_count == 1
+    LV_normalized[hc_indexes_col] = get_closest_hilbert_curve_index_points(iteration, LV_normalized)
+    for iteration in range(iteration+1, 9):
+        LV_normalized_hc_index_value_count = LV_normalized[hc_indexes_col].value_counts()
+        are_one_ones = LV_normalized_hc_index_value_count == 1
         print(f"One_ones: {are_one_ones.sum()/are_one_ones.shape[0]}")
         if all(are_one_ones):
             print(f"break at iteration {iteration-1}")
             break
         
-        need_update = LV[hc_indexes_col].isin(LV_hc_index_value_count.index[~are_one_ones])
-        LV[hc_indexes_col]*=4
-        new_point_indexes = np.array(list(set(LV.loc[need_update, hc_indexes_col].map(lambda x : list(range(x, x+4))).sum())))
-        LV.loc[need_update, hc_indexes_col] = get_closest_hilbert_curve_index_points(iteration, new_point_indexes, LV.loc[need_update,:])
+        LV_normalized[hc_indexes_col] = get_closest_hilbert_curve_index_points(iteration, LV_normalized)
 
+    # bottom indices to upper indices
+    # sort according to upper -indices
+    LV[hc_indexes_col] = LV_normalized[hc_indexes_col]
     return LV.sort_values(hc_indexes_col).set_index(hc_indexes_col), iteration-1
-    
-# fig, debug = test_strategy(m2_hilb)
-# iteration = debug[0]
-# hi = list(range(4**iteration))
-# hilb_curve = np.array(HilbertCurve(n = 2, p = iteration).points_from_distances(hi))/(2**iteration-1)
-# data = px.line(x=hilb_curve[:,0], y=hilb_curve[:,1], text= hi).update_traces(textposition="top left").data
-
-# go.Figure(data= fig.data + data).show()
-LV = crea(500)
-test_strategy(m1_naive)[0].show()
-test_strategy(m2_hilb)[0].show()
-# first hilb
-# 
-# index attributed NAN
-# while not all hilb point:
-    # index attributed * 4 (4 times more points)
-    # hilb order n+1 
-    # distance to each hilb
-    # if one/one => attribue index of hilb point
-# return sorted array with hilb attributed index 
+# %%
+LV = crea(6)
+# _, debug = test_strategy(m1_naive)
+test_strategy(m0_all)
+test_strategy(m2_hilb)
 
 
-#* self_implementation of hilbert curve
-# def hilbert_curve(order):
-#     n = 4**order
-#     n_digits =int(np.sqrt(n))
+# %%
+LV1, _ = m0_all(LV)
+LV2, _ = m2_hilb(LV)
 
-#     bin_rep = np.vectorize(lambda x: bin(x)[2:].rjust(n_digits, '0'))(np.arange(n))
 
-#     hilbert_df = pd.Series(bin_rep).str.extract(r"(\d\d)"*int(n_digits//2), expand = True)
-#     hilbert_df.columns = hilbert_df.columns[::-1]
+# hcp = pd.DataFrame(mirored_hilber_curve_points(iteration = debug)).reset_index(names='id')
+# px.line(hcp, x=0, y=1, text = 'id').show()
 
-#     sort_index = hilbert_df.replace({"00":0, "01":1, "11":2, "10":3})
-#     sort_index = sort_index.apply(lambda x: x*4**x.name).sum(axis=1)
-
-#     hilbert_df = hilbert_df.applymap(lambda x: np.array(tuple(x), dtype=int))
-#     hilbert_df = hilbert_df.apply(lambda s: s*(2**s.name))
-
-#     hilbert_df = hilbert_df.sum(axis=1).to_frame()
-#     hilbert_df['id'] = bin_rep
-#     hilbert_df['index'] = sort_index
-#     hilbert_df = hilbert_df.sort_values("index")
-#     hilbert_df[['x', 'y']] = hilbert_df[0].tolist()
-#     return hilbert_df
-
+test_strategy(m2_hilb)
 
 # %%
 
