@@ -1,69 +1,134 @@
 # %% import random
 import plotly.graph_objects as go
 import time
+import pylab as plt
 
 import numpy as np
 import pandas as pd
+pd.options.plotting.backend = "plotly"
+
 import plotly.express as px
 from itertools import permutations
 
 from hilbertcurve.hilbertcurve import HilbertCurve
-
-
-
-def dtot(LV : pd.DataFrame):
-    "Distance tot d'un parcours formule: sqrt(somme((Xi-X'i)**2)). \n referme le chemin!!"
-    circuit = LV[["x", "y"]]
-    circuit = pd.concat([circuit,circuit[0:1]])
-    d = np.sqrt((circuit[["x", "y"]].diff()**2).sum(axis=1)).sum()
-    return d
-
-def crea(n:int):
-    "créer n villes"
-    return pd.DataFrame(
-        np.random.random(size=(n,2)),
-        columns=['x', 'y']
-    )
-LV = crea(6)
-
-def plot_path(path: pd.DataFrame, elapsed = 0, strategy_name = ''):
-
-    circuit = pd.concat([path,path[0:1]])
-    circuit = circuit.reset_index(names=["id"])
-    score = dtot(circuit)
-    fig = px.line(
-        data_frame = circuit, 
-        x="x", y="y", text="id",
-          title=f'{strategy_name} Score: {round(score, 4)} \t elapsed {round(elapsed, 4)}')
-    fig.update_traces(textposition='top left')
-    return fig
-
-def test_strategy(strategy):
-    start = time.time()
-    path, *debug = strategy(LV)
-    end = time.time()
-
-    elapsed = end - start
-    fig = plot_path(path, elapsed, strategy.__name__).show()
-    return fig, debug
-
-def test_strategies(strategies: list):
-    for i in range(1, len(strategies)):
-        test_strategy(strategies[i])
-
-    # datas = test_strategy(strategies[0])[0].data
-    # for i in range(1, len(strategies)):
-    #     datas += test_strategy(strategies[i])[0].data
-    # fig = go.Figure(data = datas)
-    # fig.show()
-
-
-
-#_____________________________ strats!________________________________________________
-
-
+import TSB
+# %%
+class Neighbor_proposition:
+    def inverse_between_two_nodes(LV:pd.DataFrame) -> pd.DataFrame:
+        indices = list(range(LV.shape[0]))
+        node_i, node_j = np.sort(np.random.choice(indices, size=2, replace=False))
+        start, inverted, end = indices[:node_i+1], indices[node_j:node_i:-1], indices[node_j+1:]
+        new_indices = start+inverted+end
+        # print(node_i, node_j, start, inverted, end, new_indices, indices)
+        return LV.iloc[new_indices]
+    
+    def swap_two_cities(LV:pd.DataFrame):
+        indices = np.arange(LV.shape[0])
+        node_i, node_j = np.sort(np.random.choice(indices, size=2, replace=False))
+        # print(node_i, node_j)
+        indices[[node_i, node_j]]=indices[[node_j, node_i]]
+        return LV.iloc[indices]
+    
+    def insert(LV:pd.DataFrame):
+        indices:list = np.arange(LV.shape[0]).tolist()
+        i, to = np.random.choice(indices), np.random.randint(0, len(indices)-1)
+        node_i = indices.pop(i)
+        indices.insert(to, node_i)
+        return LV.iloc[indices]
         
+    def insert_subroute(LV:pd.DataFrame):
+        indices = np.arange(LV.shape[0])
+        node_i, node_j = np.sort(np.random.choice(indices, size=2, replace=False))
+        is_subroute = np.logical_and(indices>=node_i, indices<=node_j)
+        new_i = np.random.choice(range(np.sum(~is_subroute)+1))
+        new_indices = np.insert(indices[~is_subroute],new_i, indices[is_subroute])
+        print(node_i, node_j, is_subroute, new_i, new_indices)
+        return LV.iloc[new_indices]
+        
+#_______________________________methode 7: Annealing algorithm ________________________________________________
 
+class Annealing:
+    def __init__(self, ref_temp, same_score_max_count) -> None:
+        self.ref_temp=ref_temp
+        self.same_score_max_count = same_score_max_count
+    # -- heuristic/performance
+    # quicly normalizing the score
+    def simulate_estimators(self, LV:pd.DataFrame):
+        sample_ds = []
+        for _ in range(100):
+            random_i_s = np.random.choice(LV.index, LV.shape[0], replace=False)
+            random_path = LV.loc[random_i_s,:]
+            sample_ds.append(TSB.dtot(random_path))
+        self.mean_est, self.std_est = np.mean(sample_ds), np.std(sample_ds)
+        
+    
+    def score_qnormalized(self, LV: pd.DataFrame):
+        """
+        The ``lower`` the score the ``better``
+        Quicly normalized at random when finding a good solution should be below zero. 
+        """
+
+        return (TSB.dtot(LV)-self.mean_est)/self.std_est
+    
+    def acceptance_probability(diff, temp, temp_ref):
+        """The lower the score diff the greeater the result"""
+        return np.exp(-diff-1/ (temp_ref/temp))
+    
+    def start(self, LV:pd.DataFrame):
+        self.simulate_estimators(LV)
+
+        solution_scores_neighbor_scores_acceptance_probabilities  = []
+        global_solution, current_solution = LV.copy(), LV.copy()
+        global_score, current_score = self.score_qnormalized(global_solution), self.score_qnormalized(current_solution)
+        same_score_diff,current_temp = 0, 1
+        
+        while same_score_diff < self.same_score_max_count:
+            neighbor_solution = Neighbor_proposition.swap_two_cities(current_solution)
+            
+            # the lower the better the neighbor
+            neighbor_score = self.score_qnormalized(neighbor_solution)
+            acceptance_prob = Annealing.acceptance_probability(current_score-neighbor_score, current_temp, self.ref_temp)
+
+            if neighbor_score < current_score:
+                current_solution = neighbor_solution
+                current_score = self.score_qnormalized(current_solution)
+                same_score_diff = 0
+                
+                if neighbor_score < global_score:
+                    global_solution = neighbor_solution
+                    global_score = self.score_qnormalized(global_solution)
+            
+            # if the new solution is not better, accept it with a probability of e^(-score/temp)
+            else:
+                if np.random.uniform(0, 1) <= acceptance_prob:
+                    current_solution = neighbor_solution
+                    current_score = self.score_qnormalized(current_solution)
+                    same_score_diff = 0
+                else:
+                    same_score_diff+=1
+                    
+            current_temp+=1
+            if current_temp%1000==0:
+                print(current_temp, global_score, current_score, acceptance_prob)
+            solution_scores_neighbor_scores_acceptance_probabilities.append([self.score_qnormalized(current_solution),self.score_qnormalized(neighbor_solution), acceptance_prob])
+        
+        return global_solution, pd.DataFrame(solution_scores_neighbor_scores_acceptance_probabilities, columns=["solution_scores","neighbor_scores","acceptance_probabilities"])
+
+# score_diffs = np.linspace(0, 4, 40)
+# temperatures = np.linspace(10, 10000, 1000)
+# score_diffs, temperatures = np.meshgrid(score_diffs, temperatures)
+# aPs = Annealing.acceptance_probability(score_diffs, temperatures, temp_ref=1000)
+# fig = go.Figure(data=[go.Surface(z=aPs, x=score_diffs, y=temperatures), ])
+# fig
+# %%
+# LV = TSB.crea(20):
+solution, record = Annealing(1000, 500).start(LV)
+TSB.plot_path(solution).show()
+# %%
+record['score_diffs'] = record['solution_scores'] - record['neighbor_scores']
+record.plot(y=['score_diffs', "acceptance_probabilities"])
+# %%
+# %%
 #_____________________________methode0: le meilleur!________________________________________________
 
     
@@ -99,6 +164,7 @@ def m1_naive(LV: pd.DataFrame):
     i_path+=i_left
 
     return LV.iloc[i_path], None
+
 
 
 
@@ -156,26 +222,6 @@ def m2_hilb(LV: pd.DataFrame, iteration = 1):
     # sort according to upper -indices
     LV[hc_indexes_col] = LV_normalized[hc_indexes_col]
     return LV.sort_values(hc_indexes_col).set_index(hc_indexes_col), iteration-1
-# %%
-LV = crea(6)
-# _, debug = test_strategy(m1_naive)
-test_strategy(m0_all)
-test_strategy(m2_hilb)
-
-
-# %%
-LV1, _ = m0_all(LV)
-LV2, _ = m2_hilb(LV)
-
-
-# hcp = pd.DataFrame(mirored_hilber_curve_points(iteration = debug)).reset_index(names='id')
-# px.line(hcp, x=0, y=1, text = 'id').show()
-
-test_strategy(m2_hilb)
-
-# %%
-
-
 
 
 #_______________________________methode2: cadrillage________________________________________________
@@ -1048,671 +1094,3 @@ def moym6(LV):
     L=L[L.index([0,0]):len(L)]+L[0:L.index([0,0])]+[[0,0]]
     return L
 
-
-
-
-##-------------------------------------test--------------------------------------
-
-
-
-##def VLinM1(M2,M1,M0,LCV,VL):
-##    print('-----------------VLinM1---------------')
-##    print('')
-##    
-####  dans quelle chaine? -> on met la ville a la fin de la chaine
-##    for CV in LCV:
-##        if CV[-1]==VL:
-##            CV1=CV
-##            LCV.remove(CV)
-##        elif CV[0]==VL:
-##            CV.reverse()
-##            CV1=CV
-##            LCV.remove(CV)
-##            
-##    MCV1=M2+M1
-##    vp=VP(MCV1,VL)
-##    while vp in CV1:
-##        MCV1.remove(vp)
-##        vp=VP(MCV1,VL)
-##    print('vp=',vp)
-####  vp en bout de chaine?    
-##    if vp in M1:         
-####      dans quelle chaine? -> on met la ville au debut de la chaine
-##        for CV in LCV:
-##            if CV[0]==vp:
-##                CV2=CV
-##                LCV.remove(CV)
-##            elif CV[-1]==vp:
-##                CV.reverse()
-##                CV2=CV
-##                LCV.remove(CV)
-##        
-##
-##        LCV.append(CV1+CV2)
-##        M1.remove(vp)
-##        M0.append(vp)
-##        
-####      vp pas affectée
-##    else:
-##        LCV.append(CV1+[vp])
-##        M2.remove(vp)
-##        M1.append(vp)
-##        M0.append(VL)
-##    print('--------------------------------------')
-##    
-##
-##def VLinM2(M2,M1,M0,LCV,VL):
-##    if VL in M2:
-##        M2.remove(VL)
-##    elif VL in M1:
-##        M1.remove(VL)
-##    print('---------------VLinM2-----------------')
-##    vp=VP(M2+M1,VL)
-####  vp en bout de chaine?
-##    print('vp=',vp)
-##    if vp in M1:
-##        print('vpinM1')
-####      dans quelle chaine? -> on ajoute VL a coté de vp en bout de la chaine
-##        for i in range(len(LCV)):
-##            print(LCV[i])
-##            input()
-##            if LCV[i][0]==vp:
-##                LCV[i]=[VL]+LCV[i]
-##            elif LCV[i][-1]==vp:
-##                LCV[i]=LCV[i]+[VL]
-##        print('LCV=',LCV)
-##        M1.remove(vp)
-##        M0.append(vp)
-##        M1.append(VL)
-##    else:
-##        CV=[VL,vp]
-##        LCV.append(CV)
-##        M2.remove(vp)
-##        M1.append(vp)
-##        M1.append(VL)
-##    print('--------------------------------------')
-##        
-##            
-##    
-##        
-##
-##
-##
-##    
-##def Meth6(LV):
-##    print('LV=',LV)
-##    "villes pas affectées"
-##    M2=LV[0:len(LV)]
-##    "villes en bout de chaine"
-##    M1=[]
-##    "villes encadrées par deux villes"
-##    M0=[]
-##    LCV=[]
-##    df=(0,0)
-##    while len(M0)!=len(LV) and M2+M1!=[]:
-##        print('M2=',M2)
-##        print('M1=',M1)
-##        print('M0=',M0)
-##        print('')
-##        print('LCV=',LCV)
-##        input('')
-##        DV=DVtri(M2+M1)
-##        print('DV=',DV)
-##        print('VL=',DV[-1][1])
-##        print('')
-##        VL=DV[-1][1]
-##        
-##        if len(M1)==2 and M2==[]:
-##            M1=[]
-##            M0+=M1
-##        elif VL in M1:
-##            M1.remove(VL)
-##            if M1+M2!=[]:
-##                VLinM1(M2,M1,M0,LCV,VL)
-##                
-##        else:
-##            M2.remove(VL)
-##            VLinM2(M2,M1,M0,LCV,VL)
-##    L=LCV[0]
-##    L=L[L.index([0,0]):len(L)]+L[0:L.index([0,0])]+[[0,0]]
-##    print('L=',L)
-##    return L
-                
-            
-        
-#________________________________methode7: cercle________________________________________________
-
-
-# def DmaxVV(LV):
-#     "renvoie la distance max de chaque ville par rap aux autres"
-#     DV=[]
-#     for i in range(len(LV)):
-#         D=[]
-#         for j in range(len(LV)):
-#             D.append(((LV[i][0]-LV[j][0])**2+(LV[i][1]-LV[j][1])**2)**0.5)
-#         DV.append((D[-1],LV[i]))
-#     DV.sort()
-#     LV=[DV[i][1] for i in range(len(DV))]
-#     LV.reverse()
-#     LV=LV[1:len(LV)]+LV[0:1]
-#     return LV
-
-
-
-# def VLD(L,Va):
-#     "donne la ville la plus lointaine de Va et la distance qui les separent"
-#     D=[]
-#     for elt in L:
-#         D.append(((elt[0]-Va[0])**2+(elt[1]-Va[1])**2)**0.5)
-        
-#     idmax=D.index(max(D))
-#     return (L[idmax],max(D))       
-
-
-# def V_d_V(LV):
-#     "renvoie un couple composé des deux villes les plus lointaines de la liste LV"
-#     LDV=[]
-#     for V in LV:
-#         (Vl,d)=VLD(LV,V)
-#         LDV.append((d,(V,Vl)))
-#     LDV.sort()
-#     return LDV[-1][1]
-
-
-# def CVM8(MDR,Va,Vl):
-#     print('________________')
-#     MDR=list(MDR)
-#     CV=[]
-    
-
-#     while MDR!=[]:
-#         rect=[(min(Va[0],Vl[0]),max(Va[0],Vl[0])),(min(Va[1],Vl[1]),max(Va[1],Vl[1]))]
-        
-#         print('rect',rect)
-#         print('')
-#         input(('MDR',MDR))
-#         turtle.up()
-#         turtle.goto(Va)
-#         input('va')
-#         turtle.goto(Vl)
-#         input('vl')
-#         turtle.goto((rect[0][0],rect[1][0]))
-#         turtle.down()
-#         turtle.goto((rect[0][0],rect[1][1]))
-#         turtle.goto((rect[0][1],rect[1][1]))
-#         turtle.goto((rect[0][1],rect[1][0]))
-#         turtle.goto((rect[0][0],rect[1][0]))
-#         turtle.up()
-#         if len(MDR)==1:
-#             CV+=MDR
-#             MDR=[]
-
-#         else:
-#             print('rect',rect)
-#             print('')
-#             input(('MDR',MDR))
-#             turtle.up()
-#             turtle.goto(Va)
-#             input('va')
-#             turtle.goto(Vl)
-#             input('vl')
-#             turtle.goto((rect[0][0],rect[1][0]))
-#             turtle.down()
-#             turtle.goto((rect[0][0],rect[1][1]))
-#             turtle.goto((rect[0][1],rect[1][1]))
-#             turtle.goto((rect[0][1],rect[1][0]))
-#             turtle.goto((rect[0][0],rect[1][0]))
-#             turtle.up()
-
-#             MDRbis=[] 
-#             for V in MDR:
-#                 turtle.goto(V)
-#                 if rect[0][0]<V[0]<rect[0][1] and rect[1][0]<V[1]<rect[1][1]:
-#                     MDRbis.append(V)
-#             MDRbis.append(Vl)
-#             Vabis=VP(MDRbis,Va)
-#             CV+=CVM8(MDRbis,Vabis,Vl)
-#             CV.insert(0,Va)
-            
-#             print('CV',CV)
-#             input(('MDR',MDR))
-            
-#             for V in CV:
-#                 if V in MDR:
-#                     MDR.remove(V)
-                
-#             input(('MDR',MDR))
-            
-#             turtle.color('green')
-#             for V in CV:
-#                 turtle.goto(V)
-#                 turtle.down()
-#             turtle.up()
-#             turtle.color('black')
-#     input('----------------')    
-#     return CV
-    
-            
-        
-
-# ##def m8(LV):
-# ##    print('LV=',LV)
-# ##    
-# ##    (Va,Vl)=V_d_V(LV) #les deux villes les plus lointaines (e) elles de LV en prennant Va pr 1ere ville
-# ##    
-# ##    print('va,vl',Va,Vl)
-# ##    LV=LV[LV.index(Vl):len(LV)]+LV[0:LV.index(Vl)] #on reordonne LV pour mettre Vl en 1er
-# ##    LV.remove(Va)
-# ##    LV.append(Va)
-# ##    
-# ##    turtle.speed('fastest')
-# ##    print('LV=',LV)
-# ##    turtle.setup(800,800,0,0)
-# ##    turtle.up()
-# ##    for V in LV :
-# ##        turtle.goto(V)
-# ##        turtle.dot()
-# ##        
-# ##    L=[]
-# ##    M=LV
-# ##
-# ##    print('M',M)
-# ##    input()
-# ##    LCV=[] #Liste de Chaine de Villes
-# ##    while M!=[]:
-# ##        #tant qu'il manque des villes dans le trajet
-# ##        if LCV:
-# ##            Va=LCV[-1][-1]
-# ##        
-# ####        (Vl,R)=VLD(M,Va)
-# ##        rect=[(min(Va[0],Vl[0]),max(Va[0],Vl[0])),(min(Va[1],Vl[1]),max(Va[1],Vl[1]))]
-# ##        MDR=[]
-# ##        for V in M:
-# ##            turtle.goto(V)
-# ##            if rect[0][0]<V[0]<rect[0][1] and rect[1][0]<V[1]<rect[1][1]:
-# ##                MDR.append(V)
-# ##        MDR.append(Vl)
-# ##            
-# ##        CV=CVM8(MDR,Va,Vl)        
-# ##        LCV.append(CV)
-# ##        for V in CV:
-# ##            if V!=Va:
-# ##                M.remove(V)
-# ##        
-# ##        print('M',M)
-# ##        input(('LCV',LCV))
-# ##        
-# ##        turtle.color('red')
-# ##        for V in L:
-# ##            turtle.goto(V)
-# ##            turtle.down()
-# ##        turtle.up()
-# ##        turtle.color('black')
-# ##        
-# ##    
-# ##    input(('L:',L))
-# ##    turtle.color('red')
-# ##    for V in L:
-# ##        turtle.goto(V)
-# ##        turtle.down()
-# ##    turtle.up()
-# ##    print('----------')
-# ##    input('fini????')
-# ##    turtle.bye()
-# ##    
-# ##    return LCV
-
-
-# ##def CVcercle(M):
-# ##    input('____________')
-# ##    print('Mbis')
-# ##    for V in M :
-# ##        turtle.goto(V)
-# ##        
-# ##    CV=[]
-# ##    M=list(M)
-# ##    if len(M)==1:
-# ##        print('-------------')
-# ##        return M
-# ##    
-# ##    Va=M[-1]
-# ##    (Vl,R)=VLD(M,Va)
-# ##    I=((Va[0]+Vl[0])/2,(Va[1]+Vl[1])/2)
-# ##    R=R/2
-# ##    
-# ##    turtle.goto(Va)
-# ##    input('Va')
-# ##    turtle.goto(Vl)
-# ##    input('Vl')
-# ##    turtle.goto((I[0],I[1]-R))
-# ##    turtle.down()
-# ##    turtle.circle(R)
-# ##    turtle.up()
-# ##    input()
-# ##    
-# ##    Mbis=[]
-# ##    for V in M:
-# ##        if dtot([I,V])<=R and V!=Va and V!=Vl:
-# ##            Mbis.append(V)
-# ##    Mbis.append(Vl)
-# ##    
-# ##    CV=CVcercle(Mbis)
-# ##    CV.reverse()
-# ##    CV=CV+[Va]
-# ##    
-# ##    print('cv',CV)
-# ##    for V in CV :
-# ##        turtle.goto(V)
-# ##        turtle.down()
-# ##    turtle.up()
-# ##    print('------')
-# ##    input()
-# ##    
-# ##    return CV
-
-
-
-
-# def m7(LV):
-#     LV.sort()
-    
-#     print('LV=',LV)
-    
-#     (Va,Vl)=V_d_V(LV)
-#     print(Va,Vl)
-#     LV=LV[LV.index(Vl):len(LV)]+LV[0:LV.index(Vl)]
-#     LV.remove(Va)
-#     LV.append(Va)
-    
-#     turtle.speed('fastest')
-#     print('LV=',LV)
-#     turtle.setup(800,800,0,0)
-#     turtle.up()
-#     for V in LV :
-#         turtle.goto(V)
-#         turtle.dot()
-        
-#     L=LV[0:1]
-#     M=LV[1:len(LV)]
-
-#     print('M',M)
-#     input()
-    
-#     LCV=[]
-#     while M!=[]:
-        
-#         input('____________')
-
-#         Va=L[-1]
-#         (Vl,R)=VLD(M,Va)
-#         I=((Va[0]+Vl[0])/2,(Va[1]+Vl[1])/2)
-#         R=R/2
-        
-#         turtle.goto(Va)
-#         input('Va')
-#         turtle.goto(Vl)
-#         input('Vl')
-#         turtle.goto((I[0],I[1]-R))
-#         turtle.down()
-#         turtle.circle(R)
-#         turtle.up()
-#         input()
-        
-#         MDC=[]
-#         MEC=[]
-#         for V in M:
-#             if dtot([I,V])<=R:
-#                 if V!=Va:
-#                     MDC.append(V)
-#             else:
-#                 MEC.append(V)
-
-#         if Va in MEC:
-#             input('VA IN MEC PB')
-                
-#         MDC.append()
-#         CV=CVcercle(MEC,MDC,Vl)
-        
-#         print('CV',CV)
-#         print('M',M)
-        
-#         for V in CV:
-#             M.remove(V)
-#         L+=CV
-
-#         print('M',M)
-#         input(('L',L))
-#         turtle.color('red')
-#         for V in L:
-#             turtle.goto(V)
-#             turtle.down()
-#         turtle.up()
-#         turtle.color('black')
-        
-#     L.append(L[0])
-    
-#     input(('L:',L))
-#     turtle.color('red')
-#     for V in L:
-#         turtle.goto(V)
-#         turtle.down()
-#     turtle.up()
-#     print('----------')
-#     input('fini????')
-#     turtle.bye()
-    
-#     return L
-
-
-        
-# def CVcercle(MEC,MDC,Va):
-#     input('____________')
-#     print('MDC',MDC,len(MDC))
-#     for V in MsVa :
-#         turtle.goto(V)
-        
-#     MDC=list(MDC)    
-#     CV=[]
-#     tour=-1
-#     while MDC!=[]:
-#         print('MDC',MDC, len(MDC))
-#         if len(MDC)==1:
-#             CV+=MDC
-#             MDC=[]
-#         else:
-#             if CV:
-#                 Va=CV[-1]
-            
-#             (Vl,R)=VLD(MDC,Va)
-#             I=((Va[0]+Vl[0])/2,(Va[1]+Vl[1])/2)
-#             R=R/2
-                
-#             turtle.goto(Va)
-#             input('Va')
-#             turtle.goto(Vl)
-#             input('Vl')
-#             turtle.goto((I[0],I[1]-R))
-#             turtle.down()
-#             turtle.circle(R)
-#             turtle.up()
-#             input()
-            
-#             MECbis=[]
-#             MDCbis=[]
-#             for V in MEC+MDC:
-#                 if dtot([I,V])<=R:
-#                     if V!=Va:
-#                         MDCbis.append(V)
-#                     else:
-#                         MECbis.append(V)
-                        
-#             if Va in MECbis:
-#                 input('VA IN MEC PB')
-            
-#             CV=CVcercle(MEC,MDCbis,Vl)
-#             CV.reverse()
-#             CV=CV+[Va]
-#             for V in CV:
-#                 if V in MDC:
-#                     MDC.remove(V)
-            
-#             print('cv',CV)
-#             for V in CV :
-#                 turtle.goto(V)
-#                 turtle.down()
-#             turtle.up()
-#             input()
-        
-#     print('------')
-#     input()
-    
-#     return CV    
-    
-    
-            
-
-
-# #________________________resultat/moyenne/graph/comp________________________________________________
-
-        
-# def graph_spe(LL):
-#     "fait le chemins de toutes les listes contenues dans LL en mm tps"
-#     D=[dtot(L) for L in LL]
-#     turtle.setup(700,700,0,0)
-#     LT=[]
-#     for n in range(len(LL)):
-#         LT.append(turtle.Turtle())
-#     for i in range(len(LT)):
-#         LT[i].color(random.random(),random.random(),random.random())
-#     for i in range(len(LL[0])):
-#         for iT in range(len(LT)):
-#             LT[iT].dot(5,'red')
-#             LT[iT].goto(LL[iT][i])
-#     turtle.title((D))   
-
- 
-
-# def graph(L):
-#     d=0
-#     turtle.setup(700,700,0,0)
-#     turtle.color(random.random(),random.random(),random.random())
-#     turtle.up()
-#     for elt in L:
-#         turtle.goto(elt)
-#         turtle.down()
-#         turtle.dot(5,'red')
-#         d+=turtle.distance(tuple(elt))
-#         turtle.title(('distance totale:',d))
-
-
-
-# def comp(n,TR,*methodes):
-#     LV=crea(n)
-#     L=[]
-#     T=[]
-#     methodes=list([*methodes])
-#     for M in methodes:
-#         t=time.perf_counter()
-#         L.append(M(LV))
-#         T.append(time.perf_counter()-t)
-#     D=[dtot(M) for M in L]
-#     if TR==1:
-#         print('T:',T)
-#         print('D:',D)
-#         turtle.setup(700,700)
-#         T=turtle.Turtle()
-#         for rep in range(len(L)):
-#             T.color(random.random(),random.random(),random.random())
-#             T.up()
-#             for i in range(len(L[0])):
-#                 T.goto(L[rep][i])
-#                 T.dot(5,0,0,0)
-#                 T.down()
-#                 turtle.title(D)
-#         input('r')
-#         turtle.bye()
-#     else:
-#         return D
-
-
-
-
-# def moycomp(N,n,*methodes):
-#     "moy/N,n villes, mettre que 2 methodes"
-#     T=time.perf_counter()
-#     methodes=[*methodes]
-#     if len(methodes)==2:
-#         Moy=[0]*3
-#     else:
-#         Moy=[0]*len(methodes)
-#     for rep in range(N):
-#         R=comp(n,0,*methodes)
-#         t=time.perf_counter()
-#         if t-T>10:
-#             T=t
-#             print(rep)
-#             print([' '+str(meth)[10:12]+' ' for meth in methodes])
-#             print([float(str(elt/rep)[0:6]) for elt in Moy])
-#             print('')
-#         dmini=min(R)
-#         if len(methodes)==2:
-#             if R[0]==R[1]:
-#                 Moy[2]+=1
-#             else:
-#                 for i in range(len(R)):
-#                     if R[i]==dmini:
-#                         Moy[i]+=1
-#         else:
-#             for i in range(len(R)):
-#                 if R[i]==dmini:
-#                     Moy[i]+=1
-        
-#     return [elt/N for elt in Moy]
-        
-
-# def comptracers(LV,methode):
-#     methode
-#     nb=0
-#     if True:
-#         vitesse=input('vitesse: ')
-        
-#         while True:
-#             turtle.speed(vitesse)
-#             nb+=1
-#             L=methode(LV)
-#             print('dm',dtot(L))
-#             print('nb',nb)
-#             graph(L)
-#             input()
-#             turtle.clearscreen()
-#             LV=crea(len(LV))
-# ##    else:
-# ##        while True:
-# ##            nb+=1
-# ##            L0=m0(LV)
-# ##            L=methode(LV)
-# ##            if dtot(L)!=dtot(L0):
-# ##                if dtot(L)>dtot(L0):
-# ##                    print('dm,dm0',dtot(L),dtot(L0))
-# ##                    print('nb',nb)
-# ##                    gr=input('graph?')
-# ##                    if gr=='':
-# ##                        print('LV=',LV)
-# ##                        graph(L)
-# ##                        graph(L0)
-# ##                        input()
-# ##                        turtle.clearscreen()
-# ##
-# ##                else:
-# ##                    print('nb',nb)
-# ##                    print('LV=',LV)
-# ##                    turtle.title('WTF')
-# ##                    input()
-# ##                    graph(methode(LV))
-# ##                    graph(m0(LV))
-# ##                    
-# ##                    input()
-# ##                    turtle.bye()
-# ##            LV=crea(len(LV))
-
-# %%
