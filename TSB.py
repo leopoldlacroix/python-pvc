@@ -10,9 +10,9 @@ from hilbertcurve.hilbertcurve import HilbertCurve
 
 
 
-def dtot(LV : pd.DataFrame):
+def dtot(cities : pd.DataFrame):
     "Distance tot d'un parcours formule: sqrt(somme((Xi-X'i)**2)). \n referme le chemin!!"
-    circuit = LV[["x", "y"]]
+    circuit = cities[["x", "y"]]
     circuit = pd.concat([circuit,circuit[0:1]])
     d = np.sqrt((circuit[["x", "y"]].diff()**2).sum(axis=1)).sum()
     return d
@@ -26,20 +26,21 @@ def crea(n:int):
 
 def plot_path(path: pd.DataFrame, elapsed = 0, strategy_name = ''):
 
-    circuit = pd.concat([path,path[0:1]])
-    circuit = circuit.reset_index(names=["id"])
-    score = dtot(circuit)
+    score = dtot(path)
+    circuit = pd.concat([path, path[0:1]]).reset_index(names=["id"])
+    title = f'{strategy_name} Score: {round(score, 4)} \t elapsed {round(elapsed, 4)}'
+    title += '' if path.shape[0]>8 else "\t"+"".join(path.index.astype(str))
     fig = px.line(
         data_frame = circuit, 
         x="x", y="y", text="id",
-          title=f'{strategy_name} Score: {round(score, 4)} \t elapsed {round(elapsed, 4)}')
+          title=title)
     fig.update_traces(textposition='top left')
     return fig
 
 def test_strategy(strategy, n=6):
-    LV=crea(n)
+    cities=crea(n)
     start = time.time()
-    path, *debug = strategy(LV)
+    path, *debug = strategy(cities)
     end = time.time()
 
     elapsed = end - start
@@ -58,6 +59,6 @@ def test_strategies(strategies: list):
 
 
 
-LV6 = crea(6)
-LV10 = crea(10)
-LV18 = crea(18)
+cities6 = crea(6)
+cities10 = crea(10)
+cities18 = crea(18)
