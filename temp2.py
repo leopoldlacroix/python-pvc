@@ -1,4 +1,4 @@
-# %% import random
+# %%
 import plotly.graph_objects as go
 # import dash
 import pylab as plt
@@ -16,30 +16,15 @@ from jarowinkler import jaro_similarity
 import Levenshtein
 import math
 
-def matrix_apply_to_df(f, arrays_1, arrays_2=None):
-    arrays_2 = arrays_1 if arrays_2 is None else arrays_2
-    matrix= [
-        [
-            f(arr1, arr2) 
-            for arr1 in arrays_1
-        ]
-        for arr2 in arrays_2
-    ]
-    
-    return matrix
-
 
 class Neighbor_proposition:
-    def is_not_in_restrained_search_area(index):
-        return index[1:] >= index[1:][::-1]
-    
     def _choose_sorted(array):
         return np.sort(np.random.choice(array, size=2, replace=False))
         
     def inverse_between_two_nodes(LV:pd.DataFrame) -> pd.DataFrame:
         new_index = list(range(LV.shape[0]))
         node_i, node_j = Neighbor_proposition._choose_sorted(new_index)
-        start, inverted, end = new_index[:node_i+1], new_index[node_j:node_i:-1], indices[node_j+1:]
+        start, inverted, end = new_index[:node_i+1], new_index[node_j:node_i:-1], new_index[node_j+1:]
         new_index = start+inverted+end
         # print(node_i, node_j, start, inverted, end, new_index, indices)
         return LV.iloc[new_index]
@@ -50,7 +35,7 @@ class Neighbor_proposition:
         node_i, node_j = Neighbor_proposition._choose_sorted(new_index)
         new_index[node_i], new_index[node_j]=new_index[node_j], new_index[node_i]
         
-        while restrain and Neighbor_proposition.is_not_in_restrained_search_area(new_index):
+        while restrain and new_index[1:] >= new_index[1:][::-1]:
             node_i, node_j = Neighbor_proposition._choose_sorted(new_index)
             new_index[node_i], new_index[node_j]=new_index[node_j], new_index[node_i]
         
@@ -69,75 +54,29 @@ class Neighbor_proposition:
         is_subroute = np.logical_and(new_index>=node_i, new_index<=node_j)
         new_i = np.random.choice(range(np.sum(~is_subroute)+1))
         new_index = np.insert(new_index[~is_subroute],new_i, new_index[is_subroute])
-        print(node_i, node_j, is_subroute, new_i, new_index)
         return LV.loc[new_index]
     
-    def complete_random(LV:pd.DataFrame, restrain):
+    def complete_random(LV:pd.DataFrame):
         "Shuffles cities (except the first one)"
         random_i_s = np.random.choice(LV.index[1:], LV.shape[0]-1, replace=False)
-        new_index = LV.index[:1].tolist() + random_i_s.tolist()
         
-        while restrain and Neighbor_proposition.is_not_in_restrained_search_area(new_index):
-            random_i_s = np.random.choice(LV.index[1:], LV.shape[0]-1, replace=False)
-            new_index = LV.index[:1].tolist() + random_i_s.tolist()        
         return LV.loc[[LV.index[0]]+random_i_s.tolist(),:]
-
-    def swap_distance(s1, s2, swap_counter=0):
-        if len(s1)==0:
-            return 0
-        s1, s1_to_s2, s2 = list(s1), list(s1), list(s2)
-        j = s1.index(s2[0])
-        swap = j!=0
-        s1_to_s2[0],s1_to_s2[j] = s1_to_s2[j],s1_to_s2[0]
-        
-        # print(s1, s2, j, s1_to_s2, swap)
-        return swap + Neighbor_proposition.swap_distance(s1_to_s2[1:], s2[1:], swap_counter)
 
 
 #_______________________________methode 7: Annealing algorithm ________________________________________________
 
 class Annealing:
-    def __init__(self, LV: pd.DataFrame, ref_temp = 1, same_score_max_count = 500, n_starts = 10, restrain = True, random_start = True) -> None:
+    def __init__(self, ref_temp = 1, same_score_max_count = 500) -> None:
         self.ref_temp=ref_temp
         self.same_score_max_count = same_score_max_count
-        self.restrain = restrain
-        
-        self.simulate_estimators(LV)
-        
-        if random_start:
-            starts = Annealing.generate_starts(LV, n_starts, restrain)
-        else:
-            starts = [LV]*n_starts
-        
-        self.solutions_found = []
-        for lv in starts:
-            self.global_solution, self.solution_scores_neighbor_scores_acceptance_probabilities = self.start(lv)
-            self.solutions_found.append(self.global_solution)
-            
-
-    def generate_starts(LV: pd.DataFrame, n_starts: int, restrain):
-        starts = [LV.index.tolist()]
-        candidate_indicies = [LV.index.tolist()] + [Neighbor_proposition.complete_random(LV, restrain).index.tolist() for i in range(100-1)]
-        highest_dist = np.inf
-        while len(starts)<= n_starts and highest_dist >=3:
-            matrix_distances_to_refs = matrix_apply_to_df(Neighbor_proposition.swap_distance, starts, candidate_indicies)
-            min_distance_to_refs = np.min(matrix_distances_to_refs, axis=1)
-            print(max(min_distance_to_refs))
-            furthest_candidate_index = candidate_indicies[np.argmax(min_distance_to_refs)]
-            starts.append(LV.loc[furthest_candidate_index])
-        
-        return starts
-            
     # -- heuristic/performance
     # quicly normalizing the score
     def simulate_estimators(self, LV:pd.DataFrame):
-        """
-        The goal is to have normalized scores so that temperatures parameters
-        do not vary to much when new settup arrives.
-        """
         sample_ds = []
         for _ in range(100):
-            sample_ds.append(TSB.dtot(Neighbor_proposition.complete_random(LV, self.restrain)))
+            
+            
+            sample_ds.append(TSB.dtot(Neighbor_proposition.complete_random(LV)))
         self.mean_est, self.std_est = np.mean(sample_ds), np.std(sample_ds)
         
     
@@ -153,17 +92,16 @@ class Annealing:
         """The lower the score diff the greeater the result"""
         return np.exp(-diff-1/ (temp_ref/temp))
     
-    def start(self, LV:pd.DataFrame):
+    def start(self, LV:pd.DataFrame, restrain = True):
+        self.simulate_estimators(LV) #used to keep furthest solutions find a way to precompute them and check if no to ressource extensive
 
-        # for debugging
         solution_scores_neighbor_scores_acceptance_probabilities  = []
-        
         global_solution, current_solution = LV.copy(), LV.copy()
         global_score, current_score = self.score_qnormalized(global_solution), self.score_qnormalized(current_solution)
-       
-        same_score_diff_ctr, current_temp = 0, 1
-        while same_score_diff_ctr < self.same_score_max_count:
-            neighbor_solution = Neighbor_proposition.swap_two_cities(current_solution, restrain = True)
+        same_score_diff,current_temp = 0, 1
+        
+        while same_score_diff < self.same_score_max_count:
+            neighbor_solution = Neighbor_proposition.swap_two_cities(current_solution, restrain)
             
             # the lower the better the neighbor
             neighbor_score = self.score_qnormalized(neighbor_solution)
@@ -172,7 +110,7 @@ class Annealing:
             if neighbor_score < current_score:
                 current_solution = neighbor_solution
                 current_score = self.score_qnormalized(current_solution)
-                same_score_diff_ctr = 0
+                same_score_diff = 0
                 
                 if neighbor_score < global_score:
                     global_solution = neighbor_solution
@@ -183,9 +121,9 @@ class Annealing:
                 if np.random.uniform(0, 1) <= acceptance_prob:
                     current_solution = neighbor_solution
                     current_score = self.score_qnormalized(current_solution)
-                    same_score_diff_ctr = 0
+                    same_score_diff = 0
                 else:
-                    same_score_diff_ctr+=1
+                    same_score_diff+=1
                     
             current_temp+=1
             if current_temp%1000==0:
@@ -193,11 +131,111 @@ class Annealing:
             solution_scores_neighbor_scores_acceptance_probabilities.append([self.score_qnormalized(current_solution),self.score_qnormalized(neighbor_solution), acceptance_prob])
         
         return global_solution, pd.DataFrame(solution_scores_neighbor_scores_acceptance_probabilities, columns=["solution_scores","neighbor_scores","acceptance_probabilities"])
+
+def swap_distance(s1, s2, swap_counter=0):
+    if len(s1)==0:
+        return 0
+    s1, s1_to_s2, s2 = list(s1), list(s1), list(s2)
+    j = s1.index(s2[0])
+    swap = j!=0
+    s1_to_s2[0],s1_to_s2[j] = s1_to_s2[j],s1_to_s2[0]
+    
+    # print(s1, s2, j, s1_to_s2, swap)
+    return swap + swap_distance(s1_to_s2[1:], s2[1:], swap_counter)
+
+def matrix_apply_to_df(f, arrays_1, arrays_2=None):
+    arrays_2 = arrays_1 if arrays_2 is None else arrays_2
+    matrix= [
+        [
+            f(arr1, arr2) 
+            for arr1 in arrays_1
+        ]
+        for arr2 in arrays_2
+    ]
+    
+    return matrix
+# %%
+def coverage_start(lv: pd.DataFrame, n_starts = 10):
+    ref_sigs = [lv.index.tolist()]
+    candidate_sigs = [lv.index.tolist()] + [Neighbor_proposition.complete_random(lv).index.tolist() for i in range(100-1)]
+
+    while len(ref_sigs) < n_starts:
+        matrix_distances_to_refs = matrix_apply_to_df(swap_distance, ref_sigs, candidate_sigs)
+        min_distance_to_refs = np.min(matrix_distances_to_refs, axis=1)
+        ref_sigs.append(candidate_sigs[np.argmax(min_distance_to_refs)])
+    return ref_sigs
+
+
+N_eps = 100
+episodes_scores, episode_solutions = [], []
+for episode in range(N_eps):
+
+    LV = TSB.crea(16)
+    ref_start_sigs = coverage_start(LV)
+
+    temp, max_count = 0.2, 200
+
+
+    scores_1, sols_1 = [], []
+    scores_2, sols_2 = [], []
+    scores_3, sols_3 = [], []
+    scores_4, sols_4 = [], []
+
+    for ref_sig in ref_start_sigs:
+        better_start = LV.loc[ref_sig]
+        solution, record = Annealing(temp, max_count).start(LV)
+        scores_1.append(TSB.dtot(solution))
+        sols_1.append(solution)
+        
+        solution, record = Annealing(temp, max_count).start(better_start)
+        scores_2.append(TSB.dtot(solution))
+        sols_2.append(solution)
+        
+        solution, record = Annealing(temp, max_count).start(LV, restrain = True)
+        scores_3.append(TSB.dtot(solution))
+        sols_3.append(solution)
+        
+        solution, record = Annealing(temp, max_count).start(better_start, restrain = True)
+        scores_4.append(TSB.dtot(solution))
+        sols_4.append(solution)
+        
+    new_episodes_scores = np.concatenate([np.load("episodes_scores.npy"), [scores_1,scores_2,scores_3,scores_4,]])
+    np.save("episodes_scores.npy", new_episodes_scores)
+    episode_solutions.append([sols_1,sols_2,sols_3,sols_4,])
+    print(np.min(episodes_scores[-1], axis = 1))
+    print(f"{episode=}/{N_eps}")
+
+
 # %%
 
-LV = TSB.crea(20)
+episodes_scores: np.ndarray = np.load("episodes_scores.npy")
+best_scores = np.min(episodes_scores, axis = (1,2))
+is_best_matrix: np.ndarray = np.repeat(best_scores, episodes_scores.shape[1]).reshape(episodes_scores.shape[0:2]) == np.min(episodes_scores, axis = 2)
+is_best_matrix.sum(axis=0)
 
-t = Annealing(LV, n_starts=1)
+# %%
+ep_df = pd.DataFrame(
+    range(len(episodes_scores)),
+    
+    
+)
+# np.argmin(episodes_scores, axis=0)
+
+
+    
+
+# restrained_better, same = min(scores_1)<= min(scores_2), min(scores_1)==min(scores_2)
+# print(f"{restrained_better=}, {same=}\n{min(scores_1)=}, {min(scores_2)=}, {min(scores_3)=}")
+# %%
+result_df = pd.DataFrame(
+    dict(
+        scores_restrained = scores_1,
+        sols_restrained = sols_1,
+        scores_non_restrained = scores_2,
+        sols_non_restrained = sols_2
+        )
+)
+result_df
 # %%
 record['score_diffs'] = record['solution_scores'] - record['neighbor_scores']
 record.plot(y=['score_diffs', "acceptance_probabilities"])
