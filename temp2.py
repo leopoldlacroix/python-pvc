@@ -199,7 +199,7 @@ for episode in range(N_eps):
         scores_4.append(TSB.dtot(solution))
         sols_4.append(solution)
         
-    new_episodes_scores = np.concatenate([np.load("episodes_scores.npy"), [scores_1,scores_2,scores_3,scores_4,]])
+    new_episodes_scores = np.concatenate([np.load("episodes_scores.npy"), [[scores_1,scores_2,scores_3,scores_4,]]])
     np.save("episodes_scores.npy", new_episodes_scores)
     episode_solutions.append([sols_1,sols_2,sols_3,sols_4,])
     print(np.min(episodes_scores[-1], axis = 1))
