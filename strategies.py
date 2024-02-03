@@ -31,6 +31,7 @@ def matrix_apply_to_df(f, arrays_1, arrays_2=None):
 
 class Neighbor_proposition:
     def is_not_in_restrained_search_area(index):
+        #todo if index[0] != 0: return true
         return index[1:] >= index[1:][::-1]
     
     def _choose_sorted(array):
